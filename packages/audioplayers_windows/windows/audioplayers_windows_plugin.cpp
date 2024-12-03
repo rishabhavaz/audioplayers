@@ -18,6 +18,9 @@
 #include "audio_player.h"
 #include "audioplayers_helpers.h"
 
+#define STR_LINK_TROUBLESHOOTING \
+  "https://github.com/bluefireteam/audioplayers/blob/main/troubleshooting.md"
+
 namespace {
 
 using namespace flutter;
@@ -65,12 +68,25 @@ class AudioplayersWindowsPlugin : public Plugin {
   AudioPlayer* GetPlayer(std::string playerId);
 
   void OnGlobalLog(const std::string& message);
+
+  // Called for top-level WindowProc delegation.
+  std::optional<LRESULT> HandleWindowProc(HWND hwnd,
+                                          UINT message,
+                                          WPARAM wparam,
+                                          LPARAM lparam);
+
+  // The registrar for this plugin, for accessing the window.
+  flutter::PluginRegistrarWindows* registrar_;
+
+  // The ID of the WindowProc delegate registration.
+  int window_proc_id_ = -1;
 };
 
 // static
 void AudioplayersWindowsPlugin::RegisterWithRegistrar(
-    PluginRegistrarWindows* registrar) {
-  binaryMessenger = registrar->messenger();
+    PluginRegistrarWindows* registrar)
+    : registrar_(registrar) {
+  binaryMessenger = registrar_->messenger();
   methods = std::make_unique<MethodChannel<EncodableValue>>(
       binaryMessenger, "xyz.luan/audioplayers",
       &StandardMethodCodec::GetInstance());
@@ -98,12 +114,19 @@ void AudioplayersWindowsPlugin::RegisterWithRegistrar(
   std::unique_ptr<StreamHandler<EncodableValue>> _ptr{_obj_stm_handle};
   _globalEventChannel->SetStreamHandler(std::move(_ptr));
 
-  registrar->AddPlugin(std::move(plugin));
+  registrar_->AddPlugin(std::move(plugin));
+
+  window_proc_id_ = registrar_->RegisterTopLevelWindowProcDelegate(
+      [this](HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
+        return HandleWindowProc(hwnd, message, wparam, lparam);
+      });
 }
 
 AudioplayersWindowsPlugin::AudioplayersWindowsPlugin() {}
 
-AudioplayersWindowsPlugin::~AudioplayersWindowsPlugin() {}
+AudioplayersWindowsPlugin::~AudioplayersWindowsPlugin() {
+  registrar_->UnregisterTopLevelWindowProcDelegate(window_proc_id_);
+}
 
 void AudioplayersWindowsPlugin::HandleGlobalMethodCall(
     const MethodCall<EncodableValue>& method_call,
@@ -177,7 +200,22 @@ void AudioplayersWindowsPlugin::HandleMethodCall(
       return;
     }
 
-    std::thread(&AudioPlayer::SetSourceUrl, player, url).detach();
+    try {
+      player->SetSourceUrl(url);
+    } catch (const std::exception& ex) {
+      result->Error("WindowsAudioError",
+                  "Failed to set source. For troubleshooting, "
+                  "see: " STR_LINK_TROUBLESHOOTING,
+                  flutter::EncodableValue(ex.what()));
+      return;
+    } catch (...) {
+      result->Error("WindowsAudioError",
+                  "Failed to set source. For troubleshooting, "
+                  "see: " STR_LINK_TROUBLESHOOTING,
+                  flutter::EncodableValue("Unknown Error setting url to '" +
+                                          url + "'."));
+      return;
+    }
   } else if (method_call.method_name().compare("setSourceBytes") == 0) {
     auto data = GetArgument<std::vector<uint8_t>>("bytes", args,
                                                   std::vector<uint8_t>{});
@@ -188,7 +226,21 @@ void AudioplayersWindowsPlugin::HandleMethodCall(
       return;
     }
 
-    std::thread(&AudioPlayer::SetSourceBytes, player, data).detach();
+    try {
+      player->SetSourceBytes(data);
+    } catch (const std::exception& ex) {
+      result->Error("WindowsAudioError",
+                    "Failed to set source. For troubleshooting, "
+                    "see: " STR_LINK_TROUBLESHOOTING,
+                    flutter::EncodableValue(ex.what()));
+      return;
+    } catch (...) {
+      result->Error("WindowsAudioError",
+                    "Failed to set source. For troubleshooting, "
+                    "see: " STR_LINK_TROUBLESHOOTING,
+                    nullptr);
+      return;
+    }
   } else if (method_call.method_name().compare("getDuration") == 0) {
     auto duration = player->GetDuration();
     result->Success(isnan(duration)
@@ -270,6 +322,21 @@ void AudioplayersWindowsPlugin::OnGlobalLog(const std::string& message) {
                               flutter::EncodableValue("audio.onLog")},
                              {flutter::EncodableValue("value"),
                               flutter::EncodableValue(message)}})));
+}
+
+std::optional<LRESULT> AudioplayersWindowsPlugin::HandleWindowProc(
+    HWND hwnd,
+    UINT message,
+    WPARAM wparam,
+    LPARAM lparam) {
+  std::optional<LRESULT> result;
+  switch (message) {
+    case WM_GETMINMAXINFO:
+      // Do something
+      result = 0;
+      break;
+  }
+  return result;
 }
 
 }  // namespace
